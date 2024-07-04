@@ -1,0 +1,6 @@
+python-telegram-bot==13.7
+azure-storage-blob
+azure-cosmos
+apscheduler
+pytz
+python-dotenv
