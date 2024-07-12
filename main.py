@@ -1,35 +1,26 @@
+import os
 from dotenv import load_dotenv
-load_dotenv()
-import json
-import random
-import time
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext, JobQueue
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext, Dispatcher
 from azure.storage.blob import BlobServiceClient
 from azure.cosmos import exceptions, CosmosClient, PartitionKey
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, time as dtime
 import pytz
-import os
 
-# Configura tu token de Telegram
+load_dotenv()
+
+logging.basicConfig(level=logging.INFO)
+
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-
-# Configura tu conexión de Azure
 AZURE_CONNECTION_STRING = os.getenv('AZURE_CONNECTION_STRING')
-BLOB_CONTAINER_NAME = 'banco'
-BLOB_NAME = 'banco.json'
-
-# Configuración de Cosmos DB
 COSMOS_DB_URI = os.getenv('COSMOS_DB_URI')
 COSMOS_DB_KEY = os.getenv('COSMOS_DB_KEY')
 DATABASE_NAME = 'TelegramBotDB'
 CONTAINER_NAME = 'ChatIDs'
-
-# Contraseña para autenticación
 BOT_PASSWORD = 'javi'
 
-# Crear cliente de Cosmos DB
 client = CosmosClient(COSMOS_DB_URI, COSMOS_DB_KEY)
 database = client.create_database_if_not_exists(id=DATABASE_NAME)
 container = database.create_container_if_not_exists(
@@ -42,7 +33,7 @@ def add_chat_id(chat_id):
     try:
         container.create_item(body={"id": str(chat_id), "chat_id": str(chat_id)})
     except exceptions.CosmosResourceExistsError:
-        pass
+        logging.info(f"Chat ID {chat_id} ya existe en Cosmos DB")
 
 def get_chat_ids():
     query = "SELECT c.chat_id FROM c"
@@ -55,11 +46,16 @@ def is_authenticated(chat_id):
     return len(items) > 0
 
 def load_questions():
-    blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
-    blob_client = blob_service_client.get_blob_client(container=BLOB_CONTAINER_NAME, blob=BLOB_NAME)
-    blob_data = blob_client.download_blob().readall()
-    questions = json.loads(blob_data)
-    return questions
+    try:
+        blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
+        blob_client = blob_service_client.get_blob_client(container=BLOB_CONTAINER_NAME, blob=BLOB_NAME)
+        blob_data = blob_client.download_blob().readall()
+        questions = json.loads(blob_data)
+        logging.info("Preguntas cargadas correctamente desde Azure Blob Storage")
+        return questions
+    except Exception as e:
+        logging.error(f"Error cargando preguntas: {e}")
+        return []
 
 def split_text(text, max_length):
     words = text.split(' ')
@@ -90,12 +86,16 @@ def format_options(options, max_length):
 
 def send_question(context: CallbackContext, chat_id: int):
     questions = load_questions()
+    if not questions:
+        logging.error("No se pudieron cargar las preguntas")
+        return
+    
     question = random.choice(questions)
     if 'questions' not in context.bot_data:
         context.bot_data['questions'] = {}
     context.bot_data['questions'][str(chat_id)] = question
 
-    max_length = 40  # Ajusta este valor según sea necesario
+    max_length = 40
     formatted_options = format_options(question['options'], max_length)
     keyboard = [
         [InlineKeyboardButton(option, callback_data=option[0])] for option in formatted_options
@@ -103,12 +103,13 @@ def send_question(context: CallbackContext, chat_id: int):
     reply_markup = InlineKeyboardMarkup(keyboard)
     try:
         context.bot.send_message(chat_id=chat_id, text=question['question'], reply_markup=reply_markup)
+        logging.info(f"Pregunta enviada al chat ID {chat_id}")
     except Exception as e:
-        print(f"Error al enviar la pregunta: {e}")
+        logging.error(f"Error al enviar la pregunta: {e}")
 
 def start(update: Update, context: CallbackContext) -> None:
     chat_id = update.message.chat_id
-    print(f'Chat ID: {chat_id}')  # Esto imprimirá el chat ID en la consola de Colab
+    logging.info(f'Chat ID: {chat_id}')
 
     if is_authenticated(chat_id):
         context.user_data['authenticated'] = True
@@ -140,22 +141,21 @@ def button(update: Update, context: CallbackContext) -> None:
                 try:
                     query.message.reply_photo(feedback['image'])
                 except Exception as e:
-                    print(f"Error al enviar la imagen: {e}")
-                    query.message.reply_text("No hay imagen que mostrar .")
+                    logging.error(f"Error al enviar la imagen: {e}")
+                    query.message.reply_text("No hay imagen que mostrar.")
             if 'video' in feedback:
                 try:
                     video_url = feedback['video']
-                    # Verificar que la URL es correcta
                     if video_url.startswith("https://"):
                         query.message.reply_video(video=video_url)
                     else:
                         raise ValueError("URL del video no válida.")
                 except Exception as e:
-                    print(f"Error al enviar el video: {e}")
+                    logging.error(f"Error al enviar el video: {e}")
                     query.message.reply_text("No se pudo cargar el video.")
     except KeyError as e:
         query.edit_message_text(text="Error: No se encontró la pregunta actual.")
-        print(f"Error: {e}. Context Bot Data: {context.bot_data}")
+        logging.error(f"Error: {e}. Context Bot Data: {context.bot_data}")
 
 def handle_message(update: Update, context: CallbackContext) -> None:
     text = update.message.text
@@ -167,7 +167,7 @@ def handle_message(update: Update, context: CallbackContext) -> None:
             add_chat_id(chat_id)
             show_menu(update, context)
         else:
-            update.message.reply_text('Contraseña incorrecta. Inténtalo de nuevo.')
+            update.message.reply_text('🔒 Contraseña incorrecta. Inténtalo de nuevo.')
         return
 
     if text == "Información":
@@ -218,18 +218,20 @@ def help_command(update: Update, context: CallbackContext) -> None:
 def scheduled_question(context: CallbackContext):
     chat_ids = get_chat_ids()
     for chat_id in chat_ids:
-        print(f"Enviando pregunta al chat_id: {chat_id}")  # Logging para seguimiento
+        logging.info(f"Enviando pregunta al chat_id: {chat_id}")
         send_question(context, chat_id)
-        time.sleep(1)  # Esperar 1 segundo antes de enviar la siguiente pregunta
+        time.sleep(1)
 
-def schedule_jobs(job_queue):
-    timezone = pytz.timezone('America/Mexico_City')  # Ajusta esto según tu zona horaria
-    times = ["09:00", "9:49","9:50","12:00", "15:00", "18:00"]
+def schedule_jobs():
+    scheduler = BackgroundScheduler()
+    timezone = pytz.timezone('America/Mexico_City')
+    times = ["09:00", "11:42", "11:45", "12:00", "15:00", "18:00"]
     for time_str in times:
         hour, minute = map(int, time_str.split(':'))
-        job_queue.run_daily(scheduled_question, time=dtime(hour, minute, tzinfo=timezone), context=None)
+        scheduler.add_job(scheduled_question, 'cron', hour=hour, minute=minute, timezone=timezone)
+    scheduler.start()
 
-def main():
+if __name__ == '__main__':
     updater = Updater(token=TELEGRAM_TOKEN, use_context=True)
     dispatcher = updater.dispatcher
 
@@ -238,11 +240,7 @@ def main():
     dispatcher.add_handler(CallbackQueryHandler(button))
     dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
 
-    job_queue = updater.job_queue
-    schedule_jobs(job_queue)
-
+    schedule_jobs()
     updater.start_polling()
     updater.idle()
 
-if __name__ == '__main__':
-    main()
