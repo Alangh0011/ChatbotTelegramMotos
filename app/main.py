@@ -1,13 +1,19 @@
+from dotenv import load_dotenv
+load_dotenv()
 import json
+import random
 import logging
 import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext, Dispatcher
 from azure.storage.blob import BlobServiceClient
 from azure.cosmos import exceptions, CosmosClient, PartitionKey
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, time as dtime
 import pytz
+from flask import Flask, request
+
+app = Flask(__name__)
 
 # Configura tu token de Telegram
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
@@ -231,13 +237,15 @@ def scheduled_question(context: CallbackContext):
 def schedule_jobs():
     scheduler = BackgroundScheduler()
     timezone = pytz.timezone('America/Mexico_City')  # Ajusta esto según tu zona horaria
-    times = ["09:00", "11:42", "11:45", "12:00", "15:00", "18:00"]
+    times = ["09:00", "12:00", "15:00", "18:00"]
     for time_str in times:
         hour, minute = map(int, time_str.split(':'))
         scheduler.add_job(scheduled_question, 'cron', hour=hour, minute=minute, timezone=timezone)
     scheduler.start()
 
-def main():
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    data = request.get_json()
     updater = Updater(token=TELEGRAM_TOKEN, use_context=True)
     dispatcher = updater.dispatcher
 
@@ -246,10 +254,11 @@ def main():
     dispatcher.add_handler(CallbackQueryHandler(button))
     dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
 
-    schedule_jobs()
-
-    updater.start_polling()
-    updater.idle()
+    update = Update.de_json(data, updater.bot)
+    dispatcher.process_update(update)
+    return "ok", 200
 
 if __name__ == '__main__':
-    main()
+    logging.basicConfig(level=logging.INFO)
+    schedule_jobs()
+    app.run(debug=True, use_reloader=False)
