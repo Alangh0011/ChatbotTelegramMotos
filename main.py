@@ -1,26 +1,32 @@
-import os
-from dotenv import load_dotenv
+import json
 import logging
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext, Dispatcher
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
 from azure.storage.blob import BlobServiceClient
 from azure.cosmos import exceptions, CosmosClient, PartitionKey
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, time as dtime
 import pytz
 
-load_dotenv()
-
-logging.basicConfig(level=logging.INFO)
-
+# Configura tu token de Telegram
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+
+# Configura tu conexión de Azure
 AZURE_CONNECTION_STRING = os.getenv('AZURE_CONNECTION_STRING')
+BLOB_CONTAINER_NAME = 'banco'
+BLOB_NAME = 'banco.json'
+
+# Configuración de Cosmos DB
 COSMOS_DB_URI = os.getenv('COSMOS_DB_URI')
 COSMOS_DB_KEY = os.getenv('COSMOS_DB_KEY')
 DATABASE_NAME = 'TelegramBotDB'
 CONTAINER_NAME = 'ChatIDs'
+
+# Contraseña para autenticación
 BOT_PASSWORD = 'javi'
 
+# Crear cliente de Cosmos DB
 client = CosmosClient(COSMOS_DB_URI, COSMOS_DB_KEY)
 database = client.create_database_if_not_exists(id=DATABASE_NAME)
 container = database.create_container_if_not_exists(
@@ -95,7 +101,7 @@ def send_question(context: CallbackContext, chat_id: int):
         context.bot_data['questions'] = {}
     context.bot_data['questions'][str(chat_id)] = question
 
-    max_length = 40
+    max_length = 40  # Ajusta este valor según sea necesario
     formatted_options = format_options(question['options'], max_length)
     keyboard = [
         [InlineKeyboardButton(option, callback_data=option[0])] for option in formatted_options
@@ -109,7 +115,7 @@ def send_question(context: CallbackContext, chat_id: int):
 
 def start(update: Update, context: CallbackContext) -> None:
     chat_id = update.message.chat_id
-    logging.info(f'Chat ID: {chat_id}')
+    logging.info(f'Chat ID: {chat_id}')  # Logging del chat ID
 
     if is_authenticated(chat_id):
         context.user_data['authenticated'] = True
@@ -218,20 +224,20 @@ def help_command(update: Update, context: CallbackContext) -> None:
 def scheduled_question(context: CallbackContext):
     chat_ids = get_chat_ids()
     for chat_id in chat_ids:
-        logging.info(f"Enviando pregunta al chat_id: {chat_id}")
+        logging.info(f"Enviando pregunta al chat_id: {chat_id}")  # Logging para seguimiento
         send_question(context, chat_id)
-        time.sleep(1)
+        time.sleep(1)  # Esperar 1 segundo antes de enviar la siguiente pregunta
 
 def schedule_jobs():
     scheduler = BackgroundScheduler()
-    timezone = pytz.timezone('America/Mexico_City')
+    timezone = pytz.timezone('America/Mexico_City')  # Ajusta esto según tu zona horaria
     times = ["09:00", "11:42", "11:45", "12:00", "15:00", "18:00"]
     for time_str in times:
         hour, minute = map(int, time_str.split(':'))
         scheduler.add_job(scheduled_question, 'cron', hour=hour, minute=minute, timezone=timezone)
     scheduler.start()
 
-if __name__ == '__main__':
+def main():
     updater = Updater(token=TELEGRAM_TOKEN, use_context=True)
     dispatcher = updater.dispatcher
 
@@ -241,6 +247,9 @@ if __name__ == '__main__':
     dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
 
     schedule_jobs()
+
     updater.start_polling()
     updater.idle()
 
+if __name__ == '__main__':
+    main()
