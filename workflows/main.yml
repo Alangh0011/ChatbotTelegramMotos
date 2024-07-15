@@ -1,4 +1,4 @@
-name: Build and deploy Python app to Azure Web App - 'javichatbottelegram'
+name: Build and deploy Python app to Azure Web App - javichatbottelegram
 
 on:
   push:
@@ -42,7 +42,7 @@ jobs:
       name: 'production'
       url: ${{ steps.deploy-to-webapp.outputs.webapp-url }}
     permissions:
-      id-token: write #This is required for requesting the JWT
+      id-token: write
 
     steps:
       - name: Download artifact from build job
